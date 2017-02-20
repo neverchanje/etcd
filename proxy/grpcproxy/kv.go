@@ -27,11 +27,14 @@ type kvProxy struct {
 	cache cache.Cache
 }
 
-func NewKvProxy(c *clientv3.Client) pb.KVServer {
-	return &kvProxy{
+func NewKvProxy(c *clientv3.Client) (pb.KVServer, <-chan struct{}) {
+	kv := &kvProxy{
 		kv:    c.KV,
 		cache: cache.NewCache(cache.DefaultMaxEntries),
 	}
+	donec := make(chan struct{})
+	close(donec)
+	return kv, donec
 }
 
 func (p *kvProxy) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error) {
@@ -58,12 +61,14 @@ func (p *kvProxy) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRespo
 	req.Serializable = true
 	gresp := (*pb.RangeResponse)(resp.Get())
 	p.cache.Add(&req, gresp)
+	cacheKeys.Set(float64(p.cache.Size()))
 
 	return gresp, nil
 }
 
 func (p *kvProxy) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {
 	p.cache.Invalidate(r.Key, nil)
+	cacheKeys.Set(float64(p.cache.Size()))
 
 	resp, err := p.kv.Do(ctx, PutRequestToOp(r))
 	return (*pb.PutResponse)(resp.Put()), err
@@ -71,6 +76,7 @@ func (p *kvProxy) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, e
 
 func (p *kvProxy) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
 	p.cache.Invalidate(r.Key, r.RangeEnd)
+	cacheKeys.Set(float64(p.cache.Size()))
 
 	resp, err := p.kv.Do(ctx, DelRequestToOp(r))
 	return (*pb.DeleteRangeResponse)(resp.Del()), err
@@ -126,6 +132,8 @@ func (p *kvProxy) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, e
 		p.txnToCache(r.Failure, resp.Responses)
 	}
 
+	cacheKeys.Set(float64(p.cache.Size()))
+
 	return (*pb.TxnResponse)(resp), nil
 }
 
@@ -139,6 +147,8 @@ func (p *kvProxy) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.Com
 	if err == nil {
 		p.cache.Compact(r.Revision)
 	}
+
+	cacheKeys.Set(float64(p.cache.Size()))
 
 	return (*pb.CompactionResponse)(resp), err
 }
@@ -176,6 +186,9 @@ func RangeRequestToOp(r *pb.RangeRequest) clientv3.Op {
 	opts = append(opts, clientv3.WithMinCreateRev(r.MinCreateRevision))
 	opts = append(opts, clientv3.WithMaxModRev(r.MaxModRevision))
 	opts = append(opts, clientv3.WithMinModRev(r.MinModRevision))
+	if r.CountOnly {
+		opts = append(opts, clientv3.WithCountOnly())
+	}
 
 	if r.Serializable {
 		opts = append(opts, clientv3.WithSerializable())
@@ -189,6 +202,9 @@ func PutRequestToOp(r *pb.PutRequest) clientv3.Op {
 	opts = append(opts, clientv3.WithLease(clientv3.LeaseID(r.Lease)))
 	if r.IgnoreValue {
 		opts = append(opts, clientv3.WithIgnoreValue())
+	}
+	if r.IgnoreLease {
+		opts = append(opts, clientv3.WithIgnoreLease())
 	}
 	return clientv3.OpPut(string(r.Key), string(r.Value), opts...)
 }
