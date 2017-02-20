@@ -99,6 +99,7 @@ func IsEmptySnap(sp pb.Snapshot) bool {
 	return sp.Metadata.Index == 0
 }
 
+// 只要 Ready 里有任何数据就返回 true
 func (rd Ready) containsUpdates() bool {
 	return rd.SoftState != nil || !IsEmptyHardState(rd.HardState) ||
 		!IsEmptySnap(rd.Snapshot) || len(rd.Entries) > 0 ||
@@ -118,6 +119,8 @@ type Node interface {
 	// At most one ConfChange can be in the process of going through consensus.
 	// Application needs to call ApplyConfChange when applying EntryConfChange type entry.
 	ProposeConfChange(ctx context.Context, cc pb.ConfChange) error
+
+	// Step 的实现应该要忽略 local message。
 	// Step advances the state machine using the given message. ctx.Err() will be returned, if any.
 	Step(ctx context.Context, msg pb.Message) error
 
@@ -168,6 +171,9 @@ type Peer struct {
 	Context []byte
 }
 
+// 把当前节点作为 follower，对每个 peer，写入一个 ConfChangeAddNode 到日志，随后将 node.run
+// 作为 goroutine 启动。
+//
 // StartNode returns a new Node given configuration and a list of raft peers.
 // It appends a ConfChangeAddNode entry for each given peer to the initial log.
 func StartNode(c *Config, peers []Peer) Node {
@@ -200,13 +206,13 @@ func StartNode(c *Config, peers []Peer) Node {
 	for _, peer := range peers {
 		r.addNode(peer.ID)
 	}
-
 	n := newNode()
 	n.logger = c.Logger
 	go n.run(r)
 	return &n
 }
 
+//
 // RestartNode is similar to StartNode but does not take a list of peers.
 // The current membership of the cluster will be restored from the Storage.
 // If the caller has an existing state machine, pass in the last log index that
@@ -254,6 +260,8 @@ func newNode() node {
 	}
 }
 
+// 通过 stop channel 向 node.run() 协程请求停止。
+// 阻塞等待 node.run 协程停止，停止时 n.done 发回通知。
 func (n *node) Stop() {
 	select {
 	case n.stop <- struct{}{}:
@@ -266,6 +274,7 @@ func (n *node) Stop() {
 	<-n.done
 }
 
+// 成为 leader 之后才会激活 propc
 func (n *node) run(r *raft) {
 	var propc chan pb.Message
 	var readyc chan Ready
@@ -283,6 +292,7 @@ func (n *node) run(r *raft) {
 		if advancec != nil {
 			readyc = nil
 		} else {
+			// 每个 loop 查看 ready 是否有更新，如果有的话，发送 rd 到 readyc
 			rd = newReady(r, prevSoftSt, prevHardSt)
 			if rd.containsUpdates() {
 				readyc = n.readyc
@@ -386,6 +396,8 @@ func (n *node) run(r *raft) {
 	}
 }
 
+// 通知 node.run 给 raft 做 tick，leader 节点对应 raft.tickHeartbeat，其他节点对应 raft.tickElection。
+//
 // Tick increments the internal logical clock for this Node. Election timeouts
 // and heartbeat timeouts are in units of ticks.
 func (n *node) Tick() {
@@ -397,6 +409,7 @@ func (n *node) Tick() {
 	}
 }
 
+// 发送 MsgHup 到 recvc
 func (n *node) Campaign(ctx context.Context) error { return n.step(ctx, pb.Message{Type: pb.MsgHup}) }
 
 func (n *node) Propose(ctx context.Context, data []byte) error {
@@ -420,6 +433,9 @@ func (n *node) ProposeConfChange(ctx context.Context, cc pb.ConfChange) error {
 	return n.Step(ctx, pb.Message{Type: pb.MsgProp, Entries: []pb.Entry{{Type: pb.EntryConfChange, Data: data}}})
 }
 
+// 接收到 MsgProp，就往 propc 里发送消息 m
+// 如果不是 MsgProp，就从 recvc 里发送消息
+//
 // Step advances the state machine using msgs. The ctx.Err() will be returned,
 // if any.
 func (n *node) step(ctx context.Context, m pb.Message) error {
@@ -440,6 +456,7 @@ func (n *node) step(ctx context.Context, m pb.Message) error {
 
 func (n *node) Ready() <-chan Ready { return n.readyc }
 
+// 提示 raft.run 协程，ready 的数据已经被 applied
 func (n *node) Advance() {
 	select {
 	case n.advancec <- struct{}{}:
@@ -499,6 +516,7 @@ func (n *node) ReadIndex(ctx context.Context, rctx []byte) error {
 	return n.step(ctx, pb.Message{Type: pb.MsgReadIndex, Entries: []pb.Entry{{Data: rctx}}})
 }
 
+// newReady 会从 raft 中得到记录（raft.raftlog, raft.softState, raft.HardState）
 func newReady(r *raft, prevSoftSt *SoftState, prevHardSt pb.HardState) Ready {
 	rd := Ready{
 		Entries:          r.raftLog.unstableEntries(),

@@ -188,10 +188,11 @@ func TestStorageCreateSnapshot(t *testing.T) {
 	}{
 		{4, nil, pb.Snapshot{Data: data, Metadata: pb.SnapshotMetadata{Index: 4, Term: 4, ConfState: *cs}}},
 		{5, nil, pb.Snapshot{Data: data, Metadata: pb.SnapshotMetadata{Index: 5, Term: 5, ConfState: *cs}}},
+		{3, ErrSnapOutOfDate, pb.Snapshot{}},
 	}
 
+	s := &MemoryStorage{ents: ents}
 	for i, tt := range tests {
-		s := &MemoryStorage{ents: ents}
 		snap, err := s.CreateSnapshot(tt.i, cs, data)
 		if err != tt.werr {
 			t.Errorf("#%d: err = %v, want %v", i, err, tt.werr)

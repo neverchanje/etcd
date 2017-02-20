@@ -14,6 +14,10 @@
 
 // Package discovery provides an implementation of the cluster discovery that
 // is used by etcd.
+//
+// Documents:
+// - https://github.com/coreos/etcd/blob/master/Documentation/dev-internal/discovery_protocol.md
+// - https://coreos.com/os/docs/latest/cluster-discovery.html
 package discovery
 
 import (
@@ -86,6 +90,7 @@ type discovery struct {
 	clock clockwork.Clock
 }
 
+// proxy 允许是空字符串或者合法的 URL，允许不带 http://
 // newProxyFunc builds a proxy function from the given string, which should
 // represent a URL that can be used as a proxy. It performs basic
 // sanitization of the URL and returns any error encountered.
@@ -93,8 +98,11 @@ func newProxyFunc(proxy string) (func(*http.Request) (*url.URL, error), error) {
 	if proxy == "" {
 		return nil, nil
 	}
+
 	// Do a small amount of URL sanitization to help the user
 	// Derived from net/http.ProxyFromEnvironment
+	// 如果没有以 http 为开头，则加上 http://，再解析一次
+	// 这是一个 fastpath，因为一般都会以 http 为开头。
 	proxyURL, err := url.Parse(proxy)
 	if err != nil || !strings.HasPrefix(proxyURL.Scheme, "http") {
 		// proxy was bogus. Try prepending "http://" to it and
@@ -114,6 +122,8 @@ func newProxyFunc(proxy string) (func(*http.Request) (*url.URL, error), error) {
 	return http.ProxyURL(proxyURL), nil
 }
 
+// durl = http://host/${UUID}
+//
 func newDiscovery(durl, dproxyurl string, id types.ID) (*discovery, error) {
 	u, err := url.Parse(durl)
 	if err != nil {

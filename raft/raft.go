@@ -159,6 +159,7 @@ type Config struct {
 	// PreVote enables the Pre-Vote algorithm described in raft thesis section
 	// 9.6. This prevents disruption when a node that has been partitioned away
 	// rejoins the cluster.
+	// 如果一个 follower 出现网络分区时 prevote，那么它将会转为 StatePreCandidate 状态
 	PreVote bool
 
 	// ReadOnlyOption specifies how the read only request is processed.
@@ -263,6 +264,10 @@ type raft struct {
 	logger Logger
 }
 
+// 新创建 raft，会先作为 follower 角色
+// Config.peers 包括自己的 id，这边的 raft.prs 与 Config.peers 一一对应。
+// [?] 理论上 leader 应该不在 raft.prs 里，因为 leader 不是 promotable 的
+// 除了 leader 外，其他的 raft 角色的 prs 应该都有自己的 id。
 func newRaft(c *Config) *raft {
 	if err := c.validate(); err != nil {
 		panic(err.Error())
@@ -341,6 +346,7 @@ func (r *raft) nodes() []uint64 {
 }
 
 // send persists state to stable storage and then sends to its mailbox.
+
 func (r *raft) send(m pb.Message) {
 	m.From = r.id
 	if m.Type == pb.MsgVote || m.Type == pb.MsgPreVote {
@@ -486,6 +492,7 @@ func (r *raft) maybeCommit() bool {
 	return r.raftLog.maybeCommit(mci, r.Term)
 }
 
+// 重新设置 election timeout
 func (r *raft) reset(term uint64) {
 	if r.Term != term {
 		r.Term = term
@@ -510,6 +517,7 @@ func (r *raft) reset(term uint64) {
 	r.readOnly = newReadOnly(r.readOnly.option)
 }
 
+//
 func (r *raft) appendEntry(es ...pb.Entry) {
 	li := r.raftLog.lastIndex()
 	for i := range es {
@@ -594,6 +602,7 @@ func (r *raft) becomePreCandidate() {
 	r.logger.Infof("%x became pre-candidate at term %d", r.id, r.Term)
 }
 
+//
 func (r *raft) becomeLeader() {
 	// TODO(xiangli) remove the panic when the raft implementation is stable
 	if r.state == StateFollower {
@@ -621,6 +630,7 @@ func (r *raft) becomeLeader() {
 	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
 }
 
+// 收到 MsgHup，如果没有使用 prevote 策略，则成为 candidate，
 func (r *raft) campaign(t CampaignType) {
 	var term uint64
 	var voteMsg pb.MessageType
@@ -634,6 +644,8 @@ func (r *raft) campaign(t CampaignType) {
 		voteMsg = pb.MsgVote
 		term = r.Term
 	}
+
+	// 这里只有自己给自己投票，所以只有 quorum == 1 的时候等式成立
 	if r.quorum() == r.poll(r.id, voteRespMsgType(voteMsg), true) {
 		// We won the election after voting for ourselves (which must mean that
 		// this is a single-node cluster). Advance to the next state.
@@ -676,6 +688,8 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int) {
 	return granted
 }
 
+// raft.Step 会过滤掉那些 m.Term < r.Term 的日志，处理逻辑不会落到 raft.step 上。
+// 所以 stepCandidate, stepLeader, stepFollower 几乎都可以断言，m.Term >= r.Term || m.Term == 0 （大多数情况是这样的）
 func (r *raft) Step(m pb.Message) error {
 	// Handle the message term, which may result in our stepping down to a follower.
 	switch {
@@ -757,8 +771,9 @@ func (r *raft) Step(m pb.Message) error {
 		}
 
 	case pb.MsgVote, pb.MsgPreVote:
-		// The m.Term > r.Term clause is for MsgPreVote. For MsgVote m.Term should
-		// always equal r.Term.
+		// The m.Term > r.Term clause is for MsgPreVote. For MsgVote m.Term should always equal r.Term
+		// 如果 m.Term > r.Term && upToDate()，该节点会自动转为 follower.
+		//
 		if (r.Vote == None || m.Term > r.Term || r.Vote == m.From) && r.raftLog.isUpToDate(m.Index, m.LogTerm) {
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
 				r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term)
@@ -782,6 +797,10 @@ func (r *raft) Step(m pb.Message) error {
 
 type stepFunc func(r *raft, m pb.Message)
 
+// 收到 MsgHeartbeatResp 会 resume。
+// 收到 MsgProp 会将消息广播到 followers（bcastAppend），收到回复前都会 pause。并且会把消息放入 raftlog 中。
+// 收到 MsgAppResp，leader 会走一次 design.md 中描述的 progress 状态机
+//
 func stepLeader(r *raft, m pb.Message) {
 	// These message types do not require any progress for m.From.
 	switch m.Type {
@@ -870,7 +889,10 @@ func stepLeader(r *raft, m pb.Message) {
 			}
 		} else {
 			oldPaused := pr.IsPaused()
+			fmt.Printf("oldPaused: %v\n", oldPaused)
 			if pr.maybeUpdate(m.Index) {
+				fmt.Println(pr.State.String())
+
 				switch {
 				case pr.State == ProgressStateProbe:
 					pr.becomeReplicate()
@@ -978,6 +1000,7 @@ func stepLeader(r *raft, m pb.Message) {
 	}
 }
 
+//
 // stepCandidate is shared by StateCandidate and StatePreCandidate; the difference is
 // whether they respond to MsgVoteResp or MsgPreVoteResp.
 func stepCandidate(r *raft, m pb.Message) {
@@ -1138,6 +1161,7 @@ func (r *raft) restore(s pb.Snapshot) bool {
 	return true
 }
 
+// [?] r.prs 里没有 leader。
 // promotable indicates whether state machine can be promoted to leader,
 // which is true when its own id is in progress list.
 func (r *raft) promotable() bool {

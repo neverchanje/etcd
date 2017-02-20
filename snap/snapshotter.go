@@ -53,6 +53,14 @@ var (
 	}
 )
 
+// 几个公共 APIs 整理：
+// - New：创建一个新的 Snapshotter
+// - Read：读文件内容，解析为 raftpb.Snapshot
+// - Snapshotter.SaveSnap：把 raftpb.Snapshot 的内容写到文件里
+// - Snapshotter.Load：TODO
+// snapshot 文件的文件名是 term-index.snap
+// snapshot 在读写的过程中都会考虑到 crc 校验
+
 type Snapshotter struct {
 	dir string
 }
@@ -74,6 +82,7 @@ func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 	start := time.Now()
 
 	fname := fmt.Sprintf("%016x-%016x%s", snapshot.Metadata.Term, snapshot.Metadata.Index, snapSuffix)
+
 	b := pbutil.MustMarshal(snapshot)
 	crc := crc32.Update(0, crcTable, b)
 	snap := snappb.Snapshot{Crc: crc, Data: b}
@@ -96,6 +105,7 @@ func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 	return err
 }
 
+// 读第一个可读的 snapshot?
 func (s *Snapshotter) Load() (*raftpb.Snapshot, error) {
 	names, err := s.snapNames()
 	if err != nil {
@@ -160,6 +170,9 @@ func Read(snapname string) (*raftpb.Snapshot, error) {
 	return &snap, nil
 }
 
+// 按道理内存中会维护一份所有 snapshot 的名字，不过看来这里还是每次调用都查目录
+// TODO 未来看看这里有没有可能成为瓶颈
+//
 // snapNames returns the filename of the snapshots in logical time order (from newest to oldest).
 // If there is no available snapshots, an ErrNoSnapshot will be returned.
 func (s *Snapshotter) snapNames() ([]string, error) {

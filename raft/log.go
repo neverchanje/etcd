@@ -71,6 +71,8 @@ func (l *raftLog) String() string {
 	return fmt.Sprintf("committed=%d, applied=%d, unstable.offset=%d, len(unstable.Entries)=%d", l.committed, l.applied, l.unstable.offset, len(l.unstable.entries))
 }
 
+// 用来做原子操作：如果 index 的 term == logTerm，则 append。这里的 index 和 term 都指的是 last index 和 last term。
+// logTerm 指的就是 message 的 LogTerm，每条 message 都有一个 LogTerm。
 // maybeAppend returns (0, false) if the entries cannot be appended. Otherwise,
 // it returns (last index of new entries, true).
 func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry) (lastnewi uint64, ok bool) {
@@ -148,6 +150,7 @@ func (l *raftLog) nextEnts() (ents []pb.Entry) {
 	return nil
 }
 
+// 在 raftLog 中，是否有 unstable 的 log，被 committed 但是还没被 applied。
 // hasNextEnts returns if there is any available entries for execution. This
 // is a fast check without heavy raftLog.slice() in raftLog.nextEnts().
 func (l *raftLog) hasNextEnts() bool {
@@ -173,6 +176,7 @@ func (l *raftLog) firstIndex() uint64 {
 	return index
 }
 
+// unstable 的最后一个 index，可能是 unstable 的
 func (l *raftLog) lastIndex() uint64 {
 	if i, ok := l.unstable.maybeLastIndex(); ok {
 		return i
@@ -276,6 +280,7 @@ func (l *raftLog) matchTerm(i, term uint64) bool {
 	return t == term
 }
 
+// 确认 maxIndex 是否合法，如果是的话就提交从 commited+1 到 maxIndex
 func (l *raftLog) maybeCommit(maxIndex, term uint64) bool {
 	if maxIndex > l.committed && l.zeroTermOnErrCompacted(l.term(maxIndex)) == term {
 		l.commitTo(maxIndex)

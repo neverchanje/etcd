@@ -85,6 +85,7 @@ func (pr *Progress) resetState(state ProgressStateType) {
 	pr.ins.reset()
 }
 
+// 从 replicate 和 snapshot 转到 probe 的过程不会修改 match，只会修改 next
 func (pr *Progress) becomeProbe() {
 	// If the original state is ProgressStateSnapshot, progress knows that
 	// the pending snapshot has been sent to this peer successfully, then
@@ -109,6 +110,8 @@ func (pr *Progress) becomeSnapshot(snapshoti uint64) {
 	pr.PendingSnapshot = snapshoti
 }
 
+// maybeUpdate 和 maybeDecrTo 都可能会 Resume
+//
 // maybeUpdate returns false if the given n index comes from an outdated message.
 // Otherwise it updates the progress and returns true.
 func (pr *Progress) maybeUpdate(n uint64) bool {
@@ -126,8 +129,8 @@ func (pr *Progress) maybeUpdate(n uint64) bool {
 
 func (pr *Progress) optimisticUpdate(n uint64) { pr.Next = n + 1 }
 
-// maybeDecrTo returns false if the given to index comes from an out of order message.
-// Otherwise it decreases the progress next index to min(rejected, last) and returns true.
+// 发送 appendEntries 时，index 因为过大而被回绝，我们可能需要把 nextIndex 调小一点（raft paper 5.3）
+// 一种可能是之前被回绝的 index 现在不会再被回绝了（因为 follower 更新了）。
 func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 	if pr.State == ProgressStateReplicate {
 		// the rejection must be stale if the progress has matched and "rejected"
@@ -145,6 +148,7 @@ func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 		return false
 	}
 
+	// next == rejected
 	if pr.Next = min(rejected, last+1); pr.Next < 1 {
 		pr.Next = 1
 	}
@@ -155,6 +159,8 @@ func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 func (pr *Progress) pause()  { pr.Paused = true }
 func (pr *Progress) resume() { pr.Paused = false }
 
+// IsPaused 的结果不会被 Progress.Paused 所影响。换句话说，它不会受 resume() 和 pause()
+// 的影响。
 // IsPaused returns whether sending log entries to this node has been
 // paused. A node may be paused because it has rejected recent
 // MsgApps, is currently waiting for a snapshot, or has reached the

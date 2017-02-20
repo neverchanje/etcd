@@ -38,6 +38,8 @@ func nextEnts(r *raft, s *MemoryStorage) (ents []pb.Entry) {
 
 type stateMachine interface {
 	Step(m pb.Message) error
+
+	// 查看 mailbox 里即将发送的数据
 	readMessages() []pb.Message
 }
 
@@ -279,6 +281,7 @@ func TestProgressResumeByHeartbeatResp(t *testing.T) {
 	}
 }
 
+// pause 状态时不会继续 progress。
 func TestProgressPaused(t *testing.T) {
 	r := newTestRaft(1, []uint64{1, 2}, 5, 1, NewMemoryStorage())
 	r.becomeCandidate()
@@ -311,10 +314,25 @@ func testLeaderElection(t *testing.T, preVote bool) {
 		state   StateType
 		expTerm uint64
 	}{
+		/// 三副本
+
+		// 一个 leader，两个正常 followers
 		{newNetworkWithConfig(cfg, nil, nil, nil), StateLeader, 1},
+
+		// 一个 leader，一个正常 follower
 		{newNetworkWithConfig(cfg, nil, nil, nopStepper), StateLeader, 1},
+
+		// 没有一个正常 follower，candidate 无法正常做 leader
 		{newNetworkWithConfig(cfg, nil, nopStepper, nopStepper), StateCandidate, 1},
+
+		/// 四副本
+
+		// 只有一个正常 follower，未过半，candidate 无法正常做 leader
 		{newNetworkWithConfig(cfg, nil, nopStepper, nopStepper, nil), StateCandidate, 1},
+
+		/// 五副本
+
+		// 一个 leader，两个正常 follower，过半
 		{newNetworkWithConfig(cfg, nil, nopStepper, nopStepper, nil, nil), StateLeader, 1},
 
 		// three logs further along than 0, but in the same term so rejections
@@ -325,6 +343,7 @@ func testLeaderElection(t *testing.T, preVote bool) {
 	}
 
 	for i, tt := range tests {
+		// 让 id:1 作为 leader
 		tt.send(pb.Message{From: 1, To: 1, Type: pb.MsgHup})
 		sm := tt.network.peers[1].(*raft)
 		var expState StateType
@@ -356,6 +375,7 @@ func TestLeaderCyclePreVote(t *testing.T) {
 	testLeaderCycle(t, true)
 }
 
+// PreVote 和正常 vote 的 term 在哪里增加？
 // testLeaderCycle verifies that each node in a cluster can campaign
 // and be elected in turn. This ensures that elections (including
 // pre-vote) work when not starting from a clean slate (as they do in
@@ -424,6 +444,7 @@ func testLeaderElectionOverwriteNewerLogs(t *testing.T, preVote bool) {
 	// Node 1 campaigns. The election fails because a quorum of nodes
 	// know about the election that already happened at term 2. Node 1's
 	// term is pushed ahead to 2.
+	// [?] Term 在哪里增加的
 	n.send(pb.Message{From: 1, To: 1, Type: pb.MsgHup})
 	sm1 := n.peers[1].(*raft)
 	if sm1.state != StateFollower {
@@ -2935,6 +2956,7 @@ func TestTransferNonMember(t *testing.T) {
 	}
 }
 
+// 新建一个 raft 节点，加入 len(terms) 个数的 entries
 func entsWithConfig(configFunc func(*Config), terms ...uint64) *raft {
 	storage := NewMemoryStorage()
 	for i, term := range terms {
@@ -2979,6 +3001,7 @@ func newNetwork(peers ...stateMachine) *network {
 	return newNetworkWithConfig(nil, peers...)
 }
 
+// 启动一个模拟集群，peer 可以是 nil，如果是 nil，就设置一个 raft follower 节点在上面。
 // newNetworkWithConfig is like newNetwork but calls the given func to
 // modify the configuration of any state machines it creates.
 func newNetworkWithConfig(configFunc func(*Config), peers ...stateMachine) *network {

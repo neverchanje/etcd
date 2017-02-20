@@ -28,6 +28,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"golang.org/x/net/context"
 
+	// 这里用的是 v2 的 client
 	"github.com/coreos/etcd/client"
 )
 

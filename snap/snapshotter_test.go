@@ -37,6 +37,7 @@ var testSnap = &raftpb.Snapshot{
 	},
 }
 
+// 测试内容：save snapshot 后再 load snapshot，两份数据应该一致。
 func TestSaveAndLoad(t *testing.T) {
 	dir := path.Join(os.TempDir(), "snapshot")
 	err := os.Mkdir(dir, 0700)
@@ -67,6 +68,8 @@ func TestBadCRC(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 	ss := New(dir)
+
+	// 这里写一个 0000000000000001-0000000000000001.snap 文件进来
 	err = ss.save(testSnap)
 	if err != nil {
 		t.Fatal(err)

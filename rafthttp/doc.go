@@ -14,3 +14,7 @@
 
 // Package rafthttp implements HTTP transportation layer for etcd/raft pkg.
 package rafthttp
+
+// rafthttp 的网络传输采用异步方式：参考 Peer.send，
+// 具体的网络传输实现在 transport.go
+//

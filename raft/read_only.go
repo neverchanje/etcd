@@ -34,8 +34,8 @@ type readIndexStatus struct {
 
 type readOnly struct {
 	option           ReadOnlyOption
-	pendingReadIndex map[string]*readIndexStatus
-	readIndexQueue   []string
+	pendingReadIndex map[string]*readIndexStatus // <m.Entries[0].Data> -> <readIndexStatus>
+	readIndexQueue   []string                    // [m.Entries[0].Data, ...]
 }
 
 func newReadOnly(option ReadOnlyOption) *readOnly {

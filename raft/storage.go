@@ -145,6 +145,8 @@ func (ms *MemoryStorage) LastIndex() (uint64, error) {
 	return ms.lastIndex(), nil
 }
 
+// 即使没有任何日志项 append，lastIndex 也会是 0，所以第一个 dummy entry 是为了默认值而设计。
+//
 func (ms *MemoryStorage) lastIndex() uint64 {
 	return ms.ents[0].Index + uint64(len(ms.ents)) - 1
 }
@@ -167,6 +169,10 @@ func (ms *MemoryStorage) Snapshot() (pb.Snapshot, error) {
 	return ms.snapshot, nil
 }
 
+// 设计上将 entries 的第一项认为是 snapshot，而不是专门维护一个 snapshot 项。
+// 如果 storage 有一个 snapshot，那么 firstIndex 就是 snapshot 的 index。
+// 如果 storage 除了 snapshot 以外没有其他日志项，那么 lastIndex 和
+// unstable 的 offset 就是 snapshot 的 index。
 // ApplySnapshot overwrites the contents of this Storage object with
 // those of the given snapshot.
 func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
@@ -221,7 +227,7 @@ func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 		return ErrCompacted
 	}
 	if compactIndex > ms.lastIndex() {
-		raftLogger.Panicf("compact %d is out of bound lastindex(%d)", compactIndex, ms.lastIndex())
+		raftLogger.Panicf("compact %d is C of bound lastindex(%d)", compactIndex, ms.lastIndex())
 	}
 
 	i := compactIndex - offset

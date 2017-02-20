@@ -185,6 +185,8 @@ func (rn *RawNode) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
 	return &pb.ConfState{Nodes: rn.raft.nodes()}
 }
 
+// 不可以发 local messsage，local messsage 是内部用的 [?]
+//
 // Step advances the state machine using the given message.
 func (rn *RawNode) Step(m pb.Message) error {
 	// ignore unexpected local messages receiving over network

@@ -74,6 +74,7 @@ func (u *unstable) maybeTerm(i uint64) (uint64, bool) {
 	return u.entries[i-u.offset].Term, true
 }
 
+// 如果日志项里有 i,t，就把 i 和 i 之前的所有项全部删除，同时 unstable 的 offset 也会更新
 func (u *unstable) stableTo(i, t uint64) {
 	gt, ok := u.maybeTerm(i)
 	if !ok {

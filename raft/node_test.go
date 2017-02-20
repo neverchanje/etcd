@@ -22,8 +22,29 @@ import (
 
 	"github.com/coreos/etcd/pkg/testutil"
 	"github.com/coreos/etcd/raft/raftpb"
+	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/context"
 )
+
+// node.step 中处理 MsgProp 逻辑的简化版本，配合 TestNodeStep
+func TestNodeStepProp(t *testing.T) {
+	n := &node{
+		propc: make(chan raftpb.Message, 1),
+		recvc: make(chan raftpb.Message, 1),
+	}
+
+	m := raftpb.Message{Type: raftpb.MsgProp}
+
+	select {
+	case n.propc <- m:
+	}
+
+	select {
+	case <-n.propc:
+	default:
+		t.Errorf("cannot receive MsgProp on propc chan")
+	}
+}
 
 // TestNodeStep ensures that node.Step sends msgProp to propc chan
 // and other kinds of messages to recvc chan.
@@ -57,6 +78,29 @@ func TestNodeStep(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// 即使发送 MsgProp 给 propc，由于是先 cancel，再发 MsgProp，所以一定会会成功停止正常流程。
+// 配合 TestNodeStepUnblock
+func TestNodeStepUnblockCancel(t *testing.T) {
+	// a node without buffer to block step
+	n := &node{
+		propc: make(chan raftpb.Message),
+		done:  make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		err := n.Step(ctx, raftpb.Message{Type: raftpb.MsgProp})
+		assert.Equal(t, err, context.Canceled)
+	}()
+	cancel()
+
+	//clean up side-effect
+	if ctx.Err() != nil {
+		ctx = context.TODO()
 	}
 }
 
@@ -106,6 +150,17 @@ func TestNodeStepUnblock(t *testing.T) {
 	}
 }
 
+// 测试 stop 能够成功停止 run
+func TestNodeRunStop(t *testing.T) {
+	n := newNode()
+	s := NewMemoryStorage()
+
+	// r 先申请作为 follower
+	r := newTestRaft(1, []uint64{1}, 10, 1, s)
+	go n.run(r)
+	n.Stop()
+}
+
 // TestNodePropose ensures that node.Propose sends the given proposal to the underlying raft.
 func TestNodePropose(t *testing.T) {
 	msgs := []raftpb.Message{}
@@ -116,20 +171,32 @@ func TestNodePropose(t *testing.T) {
 	n := newNode()
 	s := NewMemoryStorage()
 	r := newTestRaft(1, []uint64{1}, 10, 1, s)
+
+	// 第一次 loop：发送 MsgHup，node.recvc 收到消息，node.run 走一次 Raft 状态机（raft.Step），
+	// 开始一轮 election，当前 node 成为 candidate，由于是单实例集群，当前 node 会立刻当选 leader。
+	// 第二次 loop：node.run 发送 ready。表示 campaign 操作生效。
 	go n.run(r)
 	n.Campaign(context.TODO())
+
 	for {
 		rd := <-n.Ready()
 		s.Append(rd.Entries)
+
 		// change the step function to appendStep until this raft becomes leader
 		if rd.SoftState.Lead == r.id {
+			// 不会执行 stepLeader，只会执行 appendStep
 			r.step = appendStep
 			n.Advance()
 			break
 		}
+
+		// 一般不会走到这里
 		n.Advance()
 	}
+
+	// 发 prop 给自己，走一次 raft 状态机。
 	n.Propose(context.TODO(), []byte("somedata"))
+
 	n.Stop()
 
 	if len(msgs) != 1 {
@@ -141,6 +208,8 @@ func TestNodePropose(t *testing.T) {
 	if !bytes.Equal(msgs[0].Entries[0].Data, []byte("somedata")) {
 		t.Errorf("data = %v, want %v", msgs[0].Entries[0].Data, []byte("somedata"))
 	}
+
+	println(len(r.msgs))
 }
 
 // TestNodeReadIndex ensures that node.ReadIndex sends the MsgReadIndex message to the underlying raft.
@@ -160,11 +229,11 @@ func TestNodeReadIndex(t *testing.T) {
 	go n.run(r)
 	n.Campaign(context.TODO())
 	for {
+		// node 已经当选 leader
 		rd := <-n.Ready()
 		if !reflect.DeepEqual(rd.ReadStates, wrs) {
 			t.Errorf("ReadStates = %v, want %v", rd.ReadStates, wrs)
 		}
-
 		s.Append(rd.Entries)
 
 		if rd.SoftState.Lead == r.id {

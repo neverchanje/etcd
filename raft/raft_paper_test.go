@@ -102,6 +102,8 @@ func TestStartAsFollower(t *testing.T) {
 	}
 }
 
+// 测试 leader 发送 heartbeat，发送一次 heartbeat，就会把发向所有 peers 的 heartbeat 放到
+// mailbox 里。
 // TestLeaderBcastBeat tests that if the leader receives a heartbeat tick,
 // it will send a msgApp with m.Index = 0, m.LogTerm=0 and empty entries as
 // heartbeat to all followers.
@@ -138,6 +140,10 @@ func TestCandidateStartNewElection(t *testing.T) {
 	testNonleaderStartElection(t, StateCandidate)
 }
 
+// 测试 election timeout 之后，follower 转为 candidate 并发起投票。
+// 实现上就是先判断自己是否 promotable，然后给自己发一个 MsgHup。
+// 在 raft.becomeCandidate 方法里可以看到 follower 成为 candidate 之后，term 会增加。
+//
 // testNonleaderStartElection tests that if a follower receives no communication
 // over election timeout, it begins an election to choose a new leader. It
 // increments its current term and transitions to candidate state. It then
@@ -154,6 +160,7 @@ func testNonleaderStartElection(t *testing.T, state StateType) {
 	r := newTestRaft(1, []uint64{1, 2, 3}, et, 1, NewMemoryStorage())
 	switch state {
 	case StateFollower:
+		// term 为 1，lead 为 2
 		r.becomeFollower(1, 2)
 	case StateCandidate:
 		r.becomeCandidate()
@@ -231,6 +238,9 @@ func TestLeaderElectionInOneRoundRPC(t *testing.T) {
 	}
 }
 
+// TODO 这个测试貌似并没有测试到论文里的内容
+// 看上去这个测试做的更多是单测的工作。
+//
 // TestFollowerVote tests that each follower will vote for at most one
 // candidate in a given term, on a first-come-first-served basis.
 // Reference: section 5.2
@@ -240,10 +250,15 @@ func TestFollowerVote(t *testing.T) {
 		nvote   uint64
 		wreject bool
 	}{
+		// 如果 r.Vote 为 None，则发 respopnse
 		{None, 1, false},
 		{None, 2, false},
+
+		// 如果 r.Vote==m.From，则发 response
 		{1, 1, false},
 		{2, 2, false},
+
+		// 上述都不满足，且 r.Term == m.Term，则发 reject response
 		{1, 2, true},
 		{2, 1, true},
 	}
@@ -251,6 +266,7 @@ func TestFollowerVote(t *testing.T) {
 		r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, NewMemoryStorage())
 		r.loadState(pb.HardState{Term: 1, Vote: tt.vote})
 
+		// m.Term == r.Term
 		r.Step(pb.Message{From: tt.nvote, To: 1, Term: 1, Type: pb.MsgVote})
 
 		msgs := r.readMessages()
@@ -281,7 +297,6 @@ func TestCandidateFallback(t *testing.T) {
 		}
 
 		r.Step(tt)
-
 		if g := r.state; g != StateFollower {
 			t.Errorf("#%d: state = %s, want %s", i, g, StateFollower)
 		}
@@ -302,6 +317,10 @@ func TestCandidateElectionTimeoutRandomized(t *testing.T) {
 	testNonleaderElectionTimeoutRandomized(t, StateCandidate)
 }
 
+// 在 raft.reset 里会重设 randomized election timeout，becomeCandidate 和 becomeFollower 都会调用 reset
+// 测试方法：重设 500 次 randomized election timeout，范围在 [10, 21]
+// 最终 [10, 21] 的 timeout 极大概率都曾设置过
+//
 // testNonleaderElectionTimeoutRandomized tests that election timeout for
 // follower or candidate is randomized.
 // Reference: section 5.2
@@ -343,12 +362,16 @@ func TestCandidatesElectionTimeoutNonconflict(t *testing.T) {
 	testNonleadersElectionTimeoutNonconflict(t, StateCandidate)
 }
 
+// 测试方法：每轮都让所有节点都 tick，如果有两个节点在同一时间 tick，则认为冲突。测试保证冲突的概率不会超过 0.3
+// 这是 et = 10 的情况。如果 et 设置为 2，冲突的概率会在 0.8 以上
+// **这个测试可以用来调参**。
+//
 // testNonleadersElectionTimeoutNonconflict tests that in most cases only a
 // single server(follower or candidate) will time out, which reduces the
 // likelihood of split vote in the new election.
 // Reference: section 5.2
 func testNonleadersElectionTimeoutNonconflict(t *testing.T, state StateType) {
-	et := 10
+	et := 2
 	size := 5
 	rs := make([]*raft, size)
 	ids := idsBySize(size)
@@ -375,6 +398,7 @@ func testNonleadersElectionTimeoutNonconflict(t *testing.T, state StateType) {
 				}
 			}
 		}
+
 		// several rafts time out at the same tick
 		if timeoutNum > 1 {
 			conflicts++
@@ -386,6 +410,9 @@ func testNonleadersElectionTimeoutNonconflict(t *testing.T, state StateType) {
 	}
 }
 
+// 测试 leader 能够正常广播。
+// 测试方法：给自己发一个 MsgProp，leader 会向所有 followers 广播。
+//
 // TestLeaderStartReplication tests that when receiving client proposals,
 // the leader appends the proposal to its log as a new entry, then issues
 // AppendEntries RPCs in parallel to each of the other servers to replicate
@@ -399,7 +426,10 @@ func TestLeaderStartReplication(t *testing.T) {
 	r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, s)
 	r.becomeCandidate()
 	r.becomeLeader()
+
+	// [?] 为什么要这步
 	commitNoopEntry(r, s)
+
 	li := r.raftLog.lastIndex()
 
 	ents := []pb.Entry{{Data: []byte("some data")}}
@@ -426,6 +456,8 @@ func TestLeaderStartReplication(t *testing.T) {
 	}
 }
 
+// 测试 leader 广播后发送的 MsgApp 的 commit id == 上一条记录的 index + 1
+//
 // TestLeaderCommitEntry tests that when the entry has been safely replicated,
 // the leader gives out the applied entries, which can be applied to its state
 // machine.
@@ -902,6 +934,7 @@ func (s messageSlice) Len() int           { return len(s) }
 func (s messageSlice) Less(i, j int) bool { return fmt.Sprint(s[i]) < fmt.Sprint(s[j]) }
 func (s messageSlice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
+// 成功将日志分发到所有节点上，并将日志写到存储上。
 func commitNoopEntry(r *raft, s *MemoryStorage) {
 	if r.state != StateLeader {
 		panic("it should only be used when it is the leader")
@@ -922,6 +955,7 @@ func commitNoopEntry(r *raft, s *MemoryStorage) {
 	r.raftLog.stableTo(r.raftLog.lastIndex(), r.raftLog.lastTerm())
 }
 
+// 接收 MsgApp，返回 MsgAppResp
 func acceptAndReply(m pb.Message) pb.Message {
 	if m.Type != pb.MsgApp {
 		panic("type should be MsgApp")
